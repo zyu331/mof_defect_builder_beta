@@ -53,8 +53,12 @@ class DefectMOFStructureBuilder():
         return structure
     
     def SeperateStructure(self, cifFileName, linkerSepDir = 'linkerSep' ):
-        
-        
+
+##############################################################################        
+#       Coding notes: Metal nodes append after linkers!!!!! 
+##############################################################################
+# 
+#         
         # use the packge to seperate the linker/nodes and read in
         t0 = time.time()
         cif2mofid(cifFileName ,output_path = os.path.join(self.output_dir,linkerSepDir))
@@ -67,14 +71,23 @@ class DefectMOFStructureBuilder():
         linker_cluster_assignment = CheckConnectivity(self.original_linkers)
     
         # Neighbour Metal Cluster detection : NbM
-        NbM = CheckNeighbourMetalCluster(self.original_linkers, self.original_nodes )
-        NbM = [x + len(self.original_linkers) for x in NbM]
+        coord_bond_array, metal_cluster_assignment, coord_bond_list = CheckNeighbourMetalCluster(self.original_linkers, self.original_nodes )
+        NbM = [x + len(self.original_linkers) for x in coord_bond_array]
         
         # pass Subgraph detection to the mg structure; 
         # NOTE: this could be combined together with the prvious step, but just for debug purposes, I seperated
         self.original_linkers.add_site_property('NbM',NbM)
         self.original_linkers.add_site_property('LCA',linker_cluster_assignment[1])
+        self.original_linkers.add_site_property('NbL',[np.nan]*len(self.original_linkers))
+        self.original_linkers.add_site_property('MCA',[np.nan]*len(self.original_linkers))
         self.linker_num = linker_cluster_assignment[0]
+
+        # add property to nodes   
+        self.original_nodes.add_site_property('NbM',[np.nan]*len(self.original_nodes)) # add np.nan 
+        self.original_nodes.add_site_property('LCA',[np.nan]*len(self.original_nodes)) # add np.nan 
+        self.original_nodes.add_site_property('NbL',coord_bond_list) # NbL: neighbourhodd linker
+        self.original_nodes.add_site_property('MCA',metal_cluster_assignment[1]) # MCA: Metal Cluster assginement 
+        self.original_nodes.add_site_property('is_linker',[False]*len(self.original_nodes))
 
         # create seperate molecules based on graph 
         self.molecules = []
@@ -91,34 +104,36 @@ class DefectMOFStructureBuilder():
         
         # construct new MOF structure: add lable distinguishing Metal/linker, add label for linker type, 
         # Step 0: add unique id for sites. In the late process, sites might be removed, so need to defined an id besides index.
+        id_linkers = np.arange(len(self.original_linkers))
+        self.original_linkers.add_site_property('fixed_id',id_linkers)
+        id_nodes = np.arange(len(self.original_nodes))+len(self.original_linkers)
+        self.original_nodes.add_site_property('fixed_id',id_nodes)
 
 
         # Step 1: label linker type 
         linker_label = np.full(len(self.original_linkers),None) 
-        is_linker = np.full(len(self.original_linkers),True) 
+        is_linker = np.full(len(self.original_linkers),True)
 
         for jj,molecule in enumerate(self.molecules):
             linker_type_num = np.where(self.linker_type == molecule.formula)[0]
             linker_label[indexes[jj]] = linker_type_num
         self.original_linkers.add_site_property('linker_label',linker_label)
+        self.original_nodes.add_site_property('linker_label',[np.nan]*len(self.original_nodes))
         self.original_linkers.add_site_property('is_linker',is_linker)
 
         # Step 2 : add metal site into linker site, combined as a whole 
-        processes_structure_sites = []
+        processed_structure_sites = []
         for site in self.original_linkers:
-            processes_structure_sites.append(site)
-        # add property to nodes 
-        self.original_linkers.add_site_property('is_linker',[False]*len(self.nodes))
-
+            processed_structure_sites.append(site)       
         for site in self.original_nodes:
-            processes_structure_sites.append(site)
-        self.processes_structure = mgStructure.Structure.from_sites(processes_structure_sites)
+            processed_structure_sites.append(site)
+        self.processed_structure = mgStructure.Structure.from_sites(processed_structure_sites)
 
         # print and summary
         # TODO: add some check function to make sure the right structure is read into the code 
 
         print("There are %d atoms in Metal Cluster, and %d atoms in linkers, with %d linkers, %d types" \
-        % ( len(self.original_nodes), len(self.original_linkers), self.linker_num,len(np.unique(formulas))))            
+        % ( len(self.original_nodes), len(self.original_linkers), self.linker_num, len(np.unique(formulas))))            
 
         return None
 
@@ -167,12 +182,10 @@ class DefectMOFStructureBuilder():
     
     def StructureGeneration(self, superCell, defectConc, numofdefect, linker_type):
         
-        working_linkers = copy.deepcopy(self.original_linkers)
-        working_nodes = copy.deepcopy(self.original_nodes)
+        working_mof = copy.deepcopy(self.processed_structure)
 
-        defect_structure = DefectMOFStructure(working_linkers, working_nodes, superCell, defectConc, numofdefect, linker_type, self.charge_comp, )
-        defect_structure.Build_supercell_component()
-        defect_structure.Coord_bond_Analysis()
+        defect_structure = DefectMOFStructure(working_mof, superCell, defectConc, numofdefect, linker_type, self.charge_comp)
+        defect_structure.Build_supercell()
         defect_structure.DefectGen()
         defect_structure.ReverseMonteCarlo()
         
@@ -184,10 +197,10 @@ class DefectMOFStructureBuilder():
     def LinkerVacancy(self):
         
         self.possible_Defect_Density = self._DefectDensityControl_()
-        for linker_type in self.linker_type:
+        for i_linker,linker_type in enumerate(self.linker_type):
             for key,val in self.possible_Defect_Density.items():
-       
-                self.StructureGeneration(val[3],key,val[1], linker_type)
+                print("Currently generate linker vacancy defect with %s, at conc. of %.3f" %(linker_type,key))
+                self.StructureGeneration(val[3],key,val[1], i_linker)
         
         return
     

@@ -15,7 +15,7 @@ from pymatgen.io.vasp.inputs import Poscar
 import pymatgen.core.structure as mgStructure
 from pymatgen.core.bonds import CovalentBond, get_bond_length
 from pymatgen.util.coord import all_distances, get_angle, lattice_points_in_supercell
-from pymatgen.core.sites import PeriodicSite
+from src.customized_PeriodicSite import PeriodicSite
 from pymatgen.core.operations import SymmOp
 from scipy.sparse.csgraph import connected_components
 
@@ -58,24 +58,40 @@ def TreeSearch(x, visited, bond_array):
 
 def CheckNeighbourMetalCluster(linker, metal ):
     
-### a dumb way to check the connectivity of the atoms  ###
+### an improved way to check the connectivity of the atoms  ###
     coord_dict = []
     len1,len2 = len(linker),len(metal)
-    bond_array = np.full(len1, np.nan)
     
+    # array for linker: linker atom can only coord to one metal
+    coord_bond_array = np.full(len1, np.nan)
+    # dict for metal: one metal can have multiple coord atom
+    coord_bond_list = plot_data = [[] for _ in metal]
 
+    # generate the coord bond array
     for i in range(len1):
         for j in range(len2):
             _distance_ = linker[i].distance(metal.sites[j])
-            # no coord bond info in pymatgen, thus use a naive cutoff at 2.8 A, needs to be fixed 
+            # TODO: no coord bond info in pymatgen, thus use a naive cutoff at 2.8 A, needs to be fixed 
+           
             if ((linker[i].specie.value =='O') or (linker[i].specie.value =='N')) and _distance_ < 2.8:
-                bond_array[i] = j
-            
-    return bond_array
+                coord_bond_array[i] = j
+                coord_bond_list[j].append(i)
+
+    # group the metal cluster
+    cluster_array = np.zeros((len2,len2))
+    for i in range(len2):
+        for j in range(i+1,len2):
+            if metal[i].distance(metal[j]) < 4.0:
+                cluster_array[i,j] = 1
+                cluster_array[j,i] = 1
+            else:
+                cluster_array[i,j] = 0
+    cluster_assignment = connected_components(cluster_array)
+
+    return coord_bond_array, cluster_assignment, coord_bond_list
 
 
 def CheckConnectivity(linker):
-    
     len1 = len(linker)
     bond_array = np.full((len1,len1), 0, dtype=int)
                    
