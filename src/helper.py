@@ -15,46 +15,25 @@ from pymatgen.io.vasp.inputs import Poscar
 import pymatgen.core.structure as mgStructure
 from pymatgen.core.bonds import CovalentBond, get_bond_length
 from pymatgen.util.coord import all_distances, get_angle, lattice_points_in_supercell
-from src.customized_PeriodicSite import PeriodicSite
+from pymatgen.core.sites import PeriodicSite
 from pymatgen.core.operations import SymmOp
 from scipy.sparse.csgraph import connected_components
+from pymatgen.core.sites import PeriodicSite, Site
 
-import src.cappingAgent as cappingAgent
+import src.cappingAgent as cappingAgent 
 
-def TreeSearch(x, visited, bond_array):
-    """
-    
-    Parameters
-    ----------
-    x : init
-        current start node.
-    visited : array
-        atom visted.
-    bond_array : array
-        bond info.
 
-    Returns
-    -------
-    visited : array
-        atom visted..
-    current_molecular_index : list 
-        current molecular index .
+#################################################################################################
+# important feature to be included:                                                             #
+# 1. charge dict for compensation: either through auto method or handcoded dict file            #
+# 2. coord bond info based on different metal center                                            #
+#################################################################################################
 
-    """
-    unexploredNode = [x]
-    current_molecular_index = [x]
-    
-    while unexploredNode:
-        current = unexploredNode[0]
-        visited.append(current)
-        unexploredNode.remove(current)
-        bonded = np.where( bond_array[current,:]==True)[0]
-        for x in bonded:
-            if (x not in visited) and (x not in unexploredNode):
-                unexploredNode.append(x)
-                current_molecular_index.append(x)
-    
-    return visited, current_molecular_index        
+#################################################################################################
+# important Note:                                                             
+# Lots of things in this file are ugly and need fix
+#################################################################################################
+
 
 def CheckNeighbourMetalCluster(linker, metal ):
     
@@ -168,250 +147,140 @@ def WriteStructure(output_dir, structure, name = 'POSCAR', sort = True):
     
     return
 
-def substitute_funcGroup_old( molecular, index: int, func_group, delList, addList, bond_order: int = 1):
+def NbMAna(mof, deleted_linker, _index_linker_):
 
-    # Find the nearest neighbor that is not a terminal atom.
-    all_non_terminal_nn = []
-    for nn, dist, _, _ in molecular.get_neighbors(molecular[index], 3):
-        # Check that the nn has neighbors within a sensible distance but
-        # is not the site being substituted.
-        for inn, dist2, _, _ in molecular.get_neighbors(nn, 3):
-            if inn != molecular[index] and dist2 < 1.2 * get_bond_length(nn.specie, inn.specie):
-                all_non_terminal_nn.append((nn, dist))
-                break
-
-    if len(all_non_terminal_nn) == 0:
-        raise RuntimeError("Can't find a non-terminal neighbor to attach functional group to.")
-
-    non_terminal_nn = min(all_non_terminal_nn, key=lambda d: d[1])[0]
-
-    # Set the origin point to be the coordinates of the nearest
-    # non-terminal neighbor.
-    origin = non_terminal_nn.coords
-
-    # Pass value of functional group--either from user-defined or from
-    # functional.json
-    fgroup = func_group
-
-    # If a bond length can be found, modify func_grp so that the X-group
-    # bond length is equal to the bond length.
-    try:
-        bl = get_bond_length(non_terminal_nn.specie, fgroup[1].specie, bond_order=bond_order)
-    # Catches for case of incompatibility between Element(s) and Species(s)
-    except TypeError:
-        bl = None
-
-    if bl is not None:
-        fgroup = fgroup.copy()
-        vec = fgroup[0].coords - fgroup[1].coords
-        vec /= np.linalg.norm(vec)
-        fgroup[0] = "X", fgroup[1].coords + float(bl) * vec
-
-    # Align X to the origin.
-    x = fgroup[0]
-    fgroup.translate_sites(list(range(len(fgroup))), origin - x.coords)
-
-    # Find angle between the attaching bond and the bond to be replaced.
-    v1 = fgroup[1].coords - origin
-    v2 = molecular[index].coords - origin
-    angle = get_angle(v1, v2)
-
-    if 1 < abs(angle % 180) < 179:
-        # For angles which are not 0 or 180, we perform a rotation about
-        # the origin along an axis perpendicular to both bonds to align
-        # bonds.
-        axis = np.cross(v1, v2)
-        op = SymmOp.from_origin_axis_angle(origin, axis, angle)
-        fgroup.apply_operation(op)
-    elif abs(abs(angle) - 180) < 1:
-        # We have a 180 degree angle. Simply do an inversion about the
-        # origin
-        for i, fg in enumerate(fgroup):
-            fgroup[i] = (fg.species, origin - (fg.coords - origin))
-
-    # Remove the atom to be replaced, and add the rest of the functional
-    # group.
-    delList.append(molecular[index])
-    for _site_ in fgroup[1:]:
-        s_new = PeriodicSite(_site_.species, _site_.coords, molecular.lattice, coords_are_cartesian=True)
-        addList.append(s_new)
+    """
+    goal of this helper function: 
+        input a seperate linker(specified by _index_linker)
+        return the metal-coordLinker-Linker1stneighour pair(three components!) 
     
-    return delList, addList
+    return varibles:
+        metal_dict_sitebased: fixed_id:site
+        MCA_dict_notuniqueid: metal_cluster_num: site
+        metal_coord_dict_sitebased: fixed_id:[ (fixed_id, coord sites)]
+        metal_coord_neighbour_dict_sitebased: fixed_id: [fixed_id, bonded_sites]
+        dist_metal_cluster: dist array between metal clusters
+        index_fixed_id_dict : dict from fixed_id to index
 
+    """
 
-def substitute_funcGroup( mode, molecular, indexes: list, bond_order: int = 1, oldMolecular = None, charge_comp = 0 ):
-    # Find the nearest neighbor that is not a terminal atom.
-    if mode == 'N' or mode == 'O':
-        """
-        find the neighbour CC coord to N
-        """
-        if len(indexes)!=1:
-            raise "wrong N input, more than two N atoms"
+    # initiate the return varibles
+    metal_dict_sitebased = {}
+    metal_coord_dict_sitebased = {}
+    metal_coord_neighbour_dict_sitebased = {}
+    # fetch the the current index (Compared to the fixed id )
+    index_fixed_id_dict = {}
+    for i, s in enumerate(mof):
+        index_fixed_id_dict[s.fixed_id] = i
 
-        for index in indexes:
-            all_non_terminal_nn = []
-
-
-            for nn, dist, _, _ in molecular.get_neighbors(molecular[index], 1.8):
-                # Check that the nn has neighbors within a sensible distance but
-                # is not the site being substituted.
-                for inn, dist2, _, _ in molecular.get_neighbors(nn, 1.8):
-                    if inn != molecular[index] and dist2 < 1.2 * get_bond_length(nn.specie, inn.specie):
-                        all_non_terminal_nn.append((nn, dist))
-                        break
-        if len(all_non_terminal_nn) == 1:
-            charge_comp = 1
-            print("forced charge compensation according to chemical env")                    
-        if len(all_non_terminal_nn) == 0 :
-            print("Can't find a proper env to add functional group to. no capping agent added")
-        elif len(all_non_terminal_nn) > 2:
-            all_non_terminal_nn = all_non_terminal_nn[0:2]
-            print("more than two NN for OO atoms: please check local coord env")
-        
-        sites = []
-        if oldMolecular:
-            oldMolecular.sites.append(PeriodicSite('O', molecular[indexes[0]].coords, molecular.lattice, coords_are_cartesian = True))
+    # construct metal - coord dict first
+    for index in _index_linker_:
+        if ~np.isnan(deleted_linker[index].NbM):
+            metal_fixed_id = deleted_linker[index].NbM
+            if metal_fixed_id not in metal_dict_sitebased.keys():
+                metal_dict_sitebased[metal_fixed_id] = mof[index_fixed_id_dict[metal_fixed_id]]
+                metal_coord_dict_sitebased[metal_fixed_id] = [] 
+                metal_coord_dict_sitebased[metal_fixed_id].append( (deleted_linker[index].fixed_id, deleted_linker[index]))
         else:
-            sites.append(PeriodicSite('O', molecular[indexes[0]].coords, molecular.lattice, coords_are_cartesian = True))
-        for hcount, x in enumerate(all_non_terminal_nn):
-            _site_ = x[0]
-            _coords_ = molecular[indexes[0]].coords + (_site_.coords - molecular[indexes[0]].coords)*0.96/x[1]
-            if charge_comp ==1 and hcount > 0:
-                break
-            _site_pbc_ = PeriodicSite('H', _coords_ , molecular.lattice, coords_are_cartesian = True)
-            
-            if oldMolecular:
-                oldMolecular.sites.append(_site_pbc_)
-            else:
-                sites.append(_site_pbc_)
-        if oldMolecular:
-            new_ad = oldMolecular
-        else:
-            new_ad = mgStructure.Structure.from_sites(sites)
-             
-        
-    elif mode == 'OO':
-        """
-        find the neighbour C coord to OO
-        """
-        if len(indexes)!=2:
-            raise "wrong OO input, more than two Oxygen atoms"
-        OO_group = []
-        for index in indexes:
-            all_non_terminal_nn = []
-            OO_group.append(molecular[index])   
-
-            for nn, dist, _, _ in molecular.get_neighbors(molecular[index], 2):
-                # Check that the nn has neighbors within a sensible distance but
-                # is not the site being substituted.
-                for inn, dist2, _, _ in molecular.get_neighbors(nn, 2):
-                    if inn != molecular[index] and dist2 < 1.2 * get_bond_length(nn.specie, inn.specie):
-                        all_non_terminal_nn.append((nn, dist))
-                        break
-                    
-        OO_coords = [x.coords[0] for x in OO_group]
-        for x in all_non_terminal_nn:
-            _flag_ = any([ all(x[0].coords == y) for y in OO_coords])
-            if _flag_:
-                all_non_terminal_nn.remove(x)
-                
-        if len(all_non_terminal_nn) < 1:
-            raise RuntimeError("Can't find a proper env to add functional group to.")
-        elif len(all_non_terminal_nn) > 1:
-            raise "more than two NN for OO atoms"
-        
-                
-        """
-        first add H2O, then add the additional two hydrogen by aligh COM and rotate 
-        pbc fix to find the mid point is pain, and improvement is needed 
-        
-        """
-              
-        dist_OO_pbc = molecular[indexes[0]].distance(molecular[indexes[1]])
-        dist_OO = molecular[indexes[1]].coords - molecular[indexes[0]].coords
-        for i,x in enumerate(dist_OO):
-            if abs(x) < dist_OO_pbc:
-                dist_OO[i] = x
-            else:
-                dist_OO[i] = -x
-        mid = molecular[indexes[0]].coords + dist_OO_pbc/2/np.sqrt(sum(dist_OO**2))* dist_OO
-        dist_CO_pbc = all_non_terminal_nn[0][0].distance(molecular[indexes[1]])
-        dist_CO = all_non_terminal_nn[0][0].coords - molecular[indexes[1]].coords
-        for i,x in enumerate(dist_CO):
-            if abs(x) < dist_CO_pbc:
-                dist_CO[i] = x
-            else:
-                dist_CO[i] = -x        
-        _coord_ = mid + 0.16844981387963906*dist_CO_pbc/np.sqrt(sum(dist_CO**2))* dist_CO
-
-
-        h2ooh = cappingAgent.h2ooh()
-        scale = np.sqrt(sum((h2ooh[0].coords - h2ooh[1].coords)**2))/dist_OO_pbc
-        for i,x in enumerate(h2ooh):
-            _v = x.coords - h2ooh[3].coords
-            x.coords = h2ooh[3].coords + scale*_v
-        # Align X to the origin. use the mid H atom as the origin
-        x = h2ooh[3].coords
-        h2ooh.translate_sites(list(range(len(h2ooh))), _coord_ - x)
+            continue
     
-        # Find angle between the attaching bond and the bond to be replaced.
-        v1 = h2ooh[0].coords - _coord_
-        v2 = molecular[index].coords - _coord_
-        for i,_v in enumerate(v2): 
-            if abs(_v) > dist_OO_pbc:
-                v2[i] = -_v
-        angle = get_angle(v1, v2)
-    
-        if 1 < abs(angle % 180) < 179:
-            # For angles which are not 0 or 180, we perform a rotation about
-            # the origin along an axis perpendicular to both bonds to align
-            # bonds.
-            axis = np.cross(v1, v2)
-            op = SymmOp.from_origin_axis_angle(_coord_, axis, angle)
-            h2ooh.apply_operation(op)
-        elif abs(abs(angle) - 180) < 1:
-            # We have a 180 degree angle. Simply do an inversion about the
-            # origin
-            for i, fg in enumerate(h2ooh):
-                h2ooh[i] = (fg.species, _coord_ - (fg.coords - _coord_))        
-            
-                # Set the origin point to be the coordinates of the nearest
-                # non-terminal neighbor.
-        """
-        min H atoms to the linker; max H atoms to the metal
-        """
+    # based on metal - coord dict, construct coord-neighbour dict 
+    for item in metal_coord_dict_sitebased.items():
+        coord_index, coord_atoms = item[0], item[1]
+        for atom in coord_atoms:
+            for _i in _index_linker_:
+                if mgBond.CovalentBond.is_bonded(atom[1], deleted_linker[_i]) and deleted_linker[_i].fixed_id!=atom[0]:
+                    if atom[0] not in metal_coord_neighbour_dict_sitebased.keys():
+                        metal_coord_neighbour_dict_sitebased[atom[0]] = []
+                        metal_coord_neighbour_dict_sitebased[atom[0]].append((_i,atom[1].distance(deleted_linker[_i])))
+                    else:
+                        metal_coord_neighbour_dict_sitebased[atom[0]].append((_i,atom[1].distance(deleted_linker[_i])))
 
-        axis =  h2ooh[0].coords -  h2ooh[1].coords
-        distant_0, distant_1 = np.inf, np.inf       
-        h2ooh_origin = copy.deepcopy(h2ooh)
-        
-        for i in range(0,360):
-            _h2ooh_ = copy.deepcopy(h2ooh_origin)
-            op = SymmOp.from_origin_axis_angle(_coord_, axis, i)
-            _h2ooh_.apply_operation(op)
-            site_0 = PeriodicSite(_h2ooh_.sites[2].species,_h2ooh_.sites[2].coords, molecular.lattice, coords_are_cartesian = True)
-            site_1 = PeriodicSite(_h2ooh_.sites[4].species,_h2ooh_.sites[4].coords, molecular.lattice, coords_are_cartesian = True)
-            _distance_0 = all_non_terminal_nn[0][0].distance(site_0)
-            _distance_1 = all_non_terminal_nn[0][0].distance(site_1)
-            if _distance_0 < distant_0:
-                h2ooh[2] = _h2ooh_[2]
-                distant_0 = _distance_0
-            if _distance_1 < distant_1:
-                h2ooh[4] = _h2ooh_[4]
-                distant_1 = _distance_1
-        
-        sites = []
-        for _site_ in h2ooh.sites:
-            _site_.lattice = molecular.lattice
-            _site_pbc_ = PeriodicSite(_site_.species,_site_.coords, molecular.lattice, coords_are_cartesian = True)
-            sites.append(_site_pbc_)
-            
-        if oldMolecular:
-            for _site_ in sites:
-                oldMolecular.sites.append(_site_)
-            new_ad = oldMolecular
+    # a very naive way to calculate the min dist between two metal cluster:
+    # TODO: could combined with code above 
+    associated_NbM = [ deleted_linker[s].NbM for s in _index_linker_]
+    coord_metal_index = np.array([i for i,s in enumerate(mof) if s.fixed_id in associated_NbM])
+    MCA_dict_notuniqueid = {}
+    for index in coord_metal_index:
+        if mof[index].MCA not in MCA_dict_notuniqueid.keys():
+            MCA_dict_notuniqueid[ mof[index].MCA] = []
+            MCA_dict_notuniqueid[ mof[index].MCA].append( (mof[index].fixed_id, mof[index]))
         else:
-            new_ad = mgStructure.Structure.from_sites(sites)
-            new_ad.lattice = molecular.lattice
-        
-    return new_ad
+            MCA_dict_notuniqueid[ mof[index].MCA].append( (mof[index].fixed_id, mof[index]))
+    num_metal_cluster = len(MCA_dict_notuniqueid)
+    dist_metal_cluster = np.ones((num_metal_cluster,num_metal_cluster))*100
+    for ii,key1 in enumerate(MCA_dict_notuniqueid.keys()):
+        for jj,key2 in enumerate(MCA_dict_notuniqueid.keys()):
+            x, y = MCA_dict_notuniqueid[key1], MCA_dict_notuniqueid[key2]
+            for _x in x:
+                for _y in y:
+                    _dist_ = _x[1].distance(_y[1])
+                    if _dist_ < dist_metal_cluster [ii,jj] and ii!=jj:
+                        dist_metal_cluster [ii,jj] = _dist_
+    
+    return metal_dict_sitebased, MCA_dict_notuniqueid, metal_coord_dict_sitebased, metal_coord_neighbour_dict_sitebased, dist_metal_cluster, index_fixed_id_dict
+
+
+def addOH(metal_site, bonded_site, bonded_site_1stngb):
+    M_O = metal_site.coord - bonded_site.coord
+    N_O = bonded_site.coord - bonded_site_1stngb.coord
+
+    # rescale the bond length : currently based on Zn-O
+
+
+def addH2O(metal_dict_sitebased, metal_coord_dict_sitebased,metal_coord_neighbour_dict_sitebased):
+
+    M_O = metal_coord_dict_sitebased[1].coords - metal_dict_sitebased.coords
+    N_O= []
+    for site in metal_coord_neighbour_dict_sitebased:
+        N_O.append( site.coords - metal_coord_dict_sitebased[1].coords)
+
+    O_M_bond_length = 2.1365
+    O_coords = metal_dict_sitebased.coords + O_M_bond_length/np.linalg.norm(M_O,2)*M_O
+    O_site = copy.deepcopy(metal_coord_dict_sitebased[1])
+    O_site.species, O_site.coords = 'O', O_coords
+
+    O_H_bond_length =  0.97856
+    H_coords1 = metal_coord_dict_sitebased[1].coords + O_H_bond_length/np.linalg.norm(N_O[0],2)*N_O[0]
+    H_sites1 = copy.deepcopy(metal_coord_neighbour_dict_sitebased[0])
+    H_sites1.species, H_sites1.coords = 'H', H_coords1
+
+    H_coords2 = metal_coord_dict_sitebased[1].coords + O_H_bond_length/np.linalg.norm(N_O[1],2)*N_O[1]
+    H_sites2 = copy.deepcopy(metal_coord_neighbour_dict_sitebased[1])
+    H_sites2.species, H_sites2.coords = 'H', H_coords2
+
+    return [O_site, H_sites1, H_sites2]
+    # rescale the bond length : currently based on Zn-O
+
+
+def addHOHOH(metals, coord_atom):
+
+    if len(coord_atom[0])!=1 or len(coord_atom[1])!=1:
+        print("ERROR: for HOHOH, not unique coord O, nothing added")
+        return []
+
+    site_O1 = coord_atom[0][0]
+    site_O2 = coord_atom[1][0]
+
+    O_M1 = coord_atom[0][0][1].coords - metals[0].coords
+    O_M2 = coord_atom[1][0][1].coords - metals[1].coords
+    M_mid = (metals[0].coords + metals[1].coords)/2
+
+    length_M_H_mid = 2.638178855934525
+    H_mid = copy.deepcopy(site_O1)[1]
+    H_mid.species, H_mid.coords = 'H', M_mid + length_M_H_mid/np.linalg.norm(O_M1 + O_M2,2)*(O_M1 + O_M2)
+
+    OH_length = 0.97
+    H_left = copy.deepcopy(site_O1)[1]
+    vector = H_mid.coords - site_O1[1].coords
+    H_left.species, H_left.coords = 'H', site_O2[1].coords  + 0.97/np.linalg.norm(vector,2)*vector
+
+    H_right = copy.deepcopy(site_O1)[1]
+    vector = H_mid.coords - site_O2[1].coords
+    H_right.species, H_right.coords = 'H', site_O1[1].coords  + 0.97/np.linalg.norm(vector,2)*vector
+
+
+
+    return [site_O1[1], site_O2[1], H_mid, H_left, H_right]
+    # rescale the bond length : currently based on Zn-O
+

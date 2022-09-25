@@ -30,8 +30,8 @@ def main(formatting):
         cifs.sort()
 
         for cif in cifs:
-        	mof = read(os.path.join(cif_path, cif))
-        	write(os.path.join(cif_path, cif), mof)
+            mof = read(os.path.join(cif_path, cif))
+            write(os.path.join(cif_path, cif), mof)
     
     cifFolder = 'cifs/'
     cifList = os.listdir(cifFolder)
@@ -39,23 +39,25 @@ def main(formatting):
     
     for cif in cifList:
         cifName = cif.split('_')[0]
-        if not os.path.isdir('linkerSep'):            
-            os.mkdir('linkerSep')
         print(os.path.join(cifFolder,cif))
-        # try:
-        a = DefectMOFStructureBuilder( os.path.join(cifFolder,cif), output_dir= '.', charge_comp = 0)
+        try:
+            os.mkdir('output/'+cifName)
+        except:
+            pass
+
+        a = DefectMOFStructureBuilder( os.path.join(cifFolder,cif), output_dir= 'output/'+cifName)
         a.LinkerVacancy()
 
         #except:
         #    cifName = cifName+'_debug'
             
-        if not os.path.isdir('output/'+cifName):
-            os.mkdir('output/'+cifName)
+        # if not os.path.isdir('output/'+cifName):
+        #     os.mkdir('output/'+cifName)
             
-        fileList = os.listdir('.')
-        for file in fileList:
-            if file not in stat_file:
-                shutil.move( file, 'output/'+cifName)
+        # fileList = os.listdir('.')
+        # for file in fileList:
+        #     if file not in stat_file:
+        #         shutil.move( file, 'output/'+cifName)
     
     """
     uncomment for unsucceful cif file read

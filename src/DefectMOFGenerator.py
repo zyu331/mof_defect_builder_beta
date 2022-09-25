@@ -20,27 +20,27 @@ import pymatgen.core.bonds  as mgBond
 import pymatgen.core.structure as mgStructure
 from pymatgen.io.vasp.inputs import Poscar
 
-from src.helper import CheckConnectivity, TreeSearch, WriteStructure, CheckNeighbourMetalCluster
+from src.helper import CheckConnectivity, WriteStructure, CheckNeighbourMetalCluster
 from src.DefectMOFStructure import DefectMOFStructure
+import src.molecular_charge as charge_assginement
 
 from ase.io import read, write
 
 class DefectMOFStructureBuilder():
     
-    def __init__(self, cifFile_Name, output_dir = '.' , charge_comp = 0, sepMode = 'MetalOxo', cutoff = 12.8 ):
+    def __init__(self, cifFile_Name, output_dir = '.', sepMode = 'MetalOxo', cutoff = 12.8 ):
         
         self.cifFile_Name = cifFile_Name
         self.output_dir = output_dir
         self.sepMode = sepMode
         self.cutoff = cutoff
-        self.charge_comp = charge_comp
 
         self.original_nodes = None
         self.original_linkers, self.original_linkers_length = None, None
         self.processed_structure = None
 
         self.original_Structure = self.ReadStructure(self.cifFile_Name)
-        self.SeperateStructure(self.cifFile_Name)
+        self.SeperateStructure(self.cifFile_Name,linkerSepDir = os.path.join(self.output_dir,'linkerSep' ))
         
         return
     
@@ -52,7 +52,7 @@ class DefectMOFStructureBuilder():
         
         return structure
     
-    def SeperateStructure(self, cifFileName, linkerSepDir = 'linkerSep' ):
+    def SeperateStructure(self, cifFileName, linkerSepDir):
 
 ##############################################################################        
 #       Coding notes: Metal nodes append after linkers!!!!! 
@@ -61,7 +61,11 @@ class DefectMOFStructureBuilder():
 #         
         # use the packge to seperate the linker/nodes and read in
         t0 = time.time()
-        cif2mofid(cifFileName ,output_path = os.path.join(self.output_dir,linkerSepDir))
+        try:
+            os.mkdir(linkerSepDir)
+        except:            
+            pass
+        cif2mofid(cifFileName ,output_path = linkerSepDir)
         self.original_nodes = self.ReadStructure(os.path.join(linkerSepDir, self.sepMode, 'nodes.cif'))
         self.original_linkers = self.ReadStructure(os.path.join(linkerSepDir, self.sepMode, 'linkers.cif'))
         self.original_linkers_length = len(self.original_linkers.sites)
@@ -183,14 +187,13 @@ class DefectMOFStructureBuilder():
     def StructureGeneration(self, superCell, defectConc, numofdefect, linker_type):
         
         working_mof = copy.deepcopy(self.processed_structure)
+        
+        charge_comp = charge_assginement.dictionary(self.linker_type[linker_type])
 
-        defect_structure = DefectMOFStructure(working_mof, superCell, defectConc, numofdefect, linker_type, self.charge_comp)
+        defect_structure = DefectMOFStructure(working_mof, superCell, defectConc, numofdefect, linker_type, self.output_dir, charge_comp)
         defect_structure.Build_supercell()
         defect_structure.DefectGen()
-        defect_structure.ReverseMonteCarlo()
-        
-        all_components = defect_structure.linkers.copy()
-        all_components.extend(defect_structure.node_clusters)
+        # defect_structure.ReverseMonteCarlo()
 
         return
     
