@@ -19,7 +19,7 @@ from pymatgen.core.sites import PeriodicSite, Site
 import pymatgen.core.structure as mgStructure
 from pymatgen.util.coord import all_distances
 
-from src.helper import WarrenCowleyParameter, SwapNeighborList, NbMAna, addOH, addH2O, addHOHOH, WriteStructure
+from src.helper import WarrenCowleyParameter, SwapNeighborList, NbMAna, addOH, addH2O, addHOHOH, WriteStructure, DebugVisualization, CheckConnectivity
 from src.cappingAgent import water, water2, dummy, h2ooh, oh
 
 
@@ -139,7 +139,7 @@ class DefectMOFStructure():
         for LCA in LCA_dict_notuniqueid.keys():
             added_charge = 0
             _index_linker_ = np.array(LCA_dict_notuniqueid[LCA])
-            
+
             metal_dict_sitebased, MCA_dict_notuniqueid, metal_coord_dict_sitebased, metal_coord_neighbour_dict_sitebased,\
                  dist_metal_cluster, index_fixed_id_dict = NbMAna(mof, deleted_linker, _index_linker_)
 
@@ -149,11 +149,13 @@ class DefectMOFStructure():
                     if len(_index_metal_) == 1:
                         output_sites_T = addOH(mof[_index_metal_], deleted_linker)
                         added_charge += 1
+                        print('OH added')
                     if len(_index_metal_) == 2:
                         metals = [ mof[index_fixed_id_dict[_index_]] for _index_ in _index_metal_]
                         coord_atom = [ metal_coord_dict_sitebased[_index_] for _index_ in _index_metal_ ]
                         output_sites_T= addHOHOH(metals, coord_atom )
                         added_charge += 1
+                        print('HOHOH added')
                     else:
                         print('WARNING: more than two coord in metal cluster during capping(charged), nothing added')
                 else:
@@ -171,6 +173,8 @@ class DefectMOFStructure():
         for __site__ in mof:
             self.output_sites.append(__site__)
         self.outStructure = mgStructure.Structure.from_sites(self.output_sites)
+        if added_charge != abs(self.charge_comp):
+            raise("charge not compensated")
         WriteStructure(self.output_dir, self.outStructure, name = 'POSCAR_'+str(self.defectConc)[0:4]+'_'+str(self.linker_type), sort = True)
 
         return 
@@ -189,6 +193,8 @@ class DefectMOFStructure():
     def DefectGen(self):
 
         # extract the right linkers from the supercell
+        linker_cluster_assignment = CheckConnectivity(self.mof_superCell)
+        self.mof_superCell.add_site_property('LCA',linker_cluster_assignment[1])
         _linker_info_LCA_ = np.array([ s.LCA for s in self.mof_superCell])
         _linker_info_linker_label_ = np.array([ s.linker_label for s in self.mof_superCell])
             # TODO: define the varible type, int or str? could introduce errors! 

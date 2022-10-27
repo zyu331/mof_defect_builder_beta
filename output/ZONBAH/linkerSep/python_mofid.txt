@@ -1,0 +1,1 @@
+[O-]C(=O)c1ccc(cc1)C(=O)[O-].[O].[Zr] MOFid-v1.UNKNOWN.cat0;ZONBAH_clean

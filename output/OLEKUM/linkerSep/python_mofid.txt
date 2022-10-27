@@ -1,0 +1,1 @@
+C1CN2CCN1CC2.[O-]C(=O)c1cc(Cl)c(cc1Cl)C(=O)[O-].[Zn][Zn] MOFid-v1.pcu.cat0;OLEKUM_manual

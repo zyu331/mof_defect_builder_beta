@@ -1,0 +1,3 @@
+node	[Al]
+node	[O]
+linker	[O-]C(=O)c1ccc2c(c1)ccc(c2)C(=O)[O-]

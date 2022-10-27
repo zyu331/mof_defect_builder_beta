@@ -19,6 +19,7 @@ from pymatgen.core.sites import PeriodicSite
 from pymatgen.core.operations import SymmOp
 from scipy.sparse.csgraph import connected_components
 from pymatgen.core.sites import PeriodicSite, Site
+from pymatgen.vis.structure_vtk import StructureVis
 
 import src.cappingAgent as cappingAgent 
 
@@ -35,7 +36,7 @@ import src.cappingAgent as cappingAgent
 #################################################################################################
 
 
-def CheckNeighbourMetalCluster(linker, metal ):
+def CheckNeighbourMetalCluster(linker, metal):
     
 ### an improved way to check the connectivity of the atoms  ###
     coord_dict = []
@@ -50,9 +51,10 @@ def CheckNeighbourMetalCluster(linker, metal ):
     for i in range(len1):
         for j in range(len2):
             _distance_ = linker[i].distance(metal.sites[j])
+            abs_distance = abs(linker[i].frac_coords - metal.sites[j].frac_coords)
             # TODO: no coord bond info in pymatgen, thus use a naive cutoff at 2.8 A, needs to be fixed 
            
-            if ((linker[i].specie.value =='O') or (linker[i].specie.value =='N')) and _distance_ < 2.8:
+            if ((linker[i].specie.value =='O') or (linker[i].specie.value =='N')) and _distance_ < 2.8 and all(abs_distance<0.5):
                 coord_bond_array[i] = j
                 coord_bond_list[j].append(i)
 
@@ -60,7 +62,7 @@ def CheckNeighbourMetalCluster(linker, metal ):
     cluster_array = np.zeros((len2,len2))
     for i in range(len2):
         for j in range(i+1,len2):
-            if metal[i].distance(metal[j]) < 4.0:
+            if np.linalg.norm(metal[i].coords - metal[j].coords,ord=2) < 4.0:
                 cluster_array[i,j] = 1
                 cluster_array[j,i] = 1
             else:
@@ -76,14 +78,34 @@ def CheckConnectivity(linker):
                    
     for i in range(len1):
         for j in range(i+1,len1):
-            if mgBond.CovalentBond.is_bonded(linker[i],linker[j]):
+            no_pbc_check = all( abs(linker[i].frac_coords-linker[j].frac_coords) <0.5 )
+            # coord_adjust(linker[i],linker[j]) 
+            try:
+                isbond = mgBond.CovalentBond.is_bonded(linker[i],linker[j])
+            except:
+                isbond = False
+            if isbond:
                 bond_array[i,j] = 1
-                bond_array[j,i] = 1
+                bond_array[j,i] = 1          
             else:
                 bond_array[i,j] = 0
     assignment = connected_components(bond_array)
     
     return assignment
+
+def coord_adjust(site1,site2):
+
+    frac_coords1, frac_coords2 = site1.frac_coords.copy(), site2.frac_coords.copy()
+    diffVec = frac_coords1 - frac_coords2
+
+    for i,diff in enumerate(diffVec):
+        if diff > 0.5:
+            frac_coords2[i] += 1
+        elif diff < -0.5:
+            frac_coords1[i] += 1
+    site1.frac_coords, site2.frac_coords = frac_coords1, frac_coords2
+
+    return site1, site2
 
 
 
@@ -189,7 +211,11 @@ def NbMAna(mof, deleted_linker, _index_linker_):
         coord_index, coord_atoms = item[0], item[1]
         for atom in coord_atoms:
             for _i in _index_linker_:
-                if mgBond.CovalentBond.is_bonded(atom[1], deleted_linker[_i]) and deleted_linker[_i].fixed_id!=atom[0]:
+                try: 
+                    isbond = mgBond.CovalentBond.is_bonded(atom[1], deleted_linker[_i])
+                except:
+                    isbond = False
+                if isbond and deleted_linker[_i].fixed_id!=atom[0]:
                     if atom[0] not in metal_coord_neighbour_dict_sitebased.keys():
                         metal_coord_neighbour_dict_sitebased[atom[0]] = []
                         metal_coord_neighbour_dict_sitebased[atom[0]].append((_i,atom[1].distance(deleted_linker[_i])))
@@ -243,11 +269,11 @@ def addH2O(metal_dict_sitebased, metal_coord_dict_sitebased,metal_coord_neighbou
     O_H_bond_length =  0.97856
     H_coords1 = metal_coord_dict_sitebased[1].coords + O_H_bond_length/np.linalg.norm(N_O[0],2)*N_O[0]
     H_sites1 = copy.deepcopy(metal_coord_neighbour_dict_sitebased[0])
-    H_sites1.species, H_sites1.coords = 'H', H_coords1
+    H_sites1.species, H_sites1.coords = 'S', H_coords1
 
     H_coords2 = metal_coord_dict_sitebased[1].coords + O_H_bond_length/np.linalg.norm(N_O[1],2)*N_O[1]
     H_sites2 = copy.deepcopy(metal_coord_neighbour_dict_sitebased[1])
-    H_sites2.species, H_sites2.coords = 'H', H_coords2
+    H_sites2.species, H_sites2.coords = 'S', H_coords2
 
     return [O_site, H_sites1, H_sites2]
     # rescale the bond length : currently based on Zn-O
@@ -268,19 +294,50 @@ def addHOHOH(metals, coord_atom):
 
     length_M_H_mid = 2.638178855934525
     H_mid = copy.deepcopy(site_O1)[1]
-    H_mid.species, H_mid.coords = 'H', M_mid + length_M_H_mid/np.linalg.norm(O_M1 + O_M2,2)*(O_M1 + O_M2)
+    H_mid.species, H_mid.coords = 'S', M_mid + length_M_H_mid/np.linalg.norm(O_M1 + O_M2,2)*(O_M1 + O_M2)
 
     OH_length = 0.97
     H_left = copy.deepcopy(site_O1)[1]
     vector = H_mid.coords - site_O1[1].coords
-    H_left.species, H_left.coords = 'H', site_O2[1].coords  + 0.97/np.linalg.norm(vector,2)*vector
+    H_left.species, H_left.coords = 'S', site_O2[1].coords  + 0.97/np.linalg.norm(vector,2)*vector
 
     H_right = copy.deepcopy(site_O1)[1]
     vector = H_mid.coords - site_O2[1].coords
-    H_right.species, H_right.coords = 'H', site_O1[1].coords  + 0.97/np.linalg.norm(vector,2)*vector
+    H_right.species, H_right.coords = 'S', site_O1[1].coords  + 0.97/np.linalg.norm(vector,2)*vector
 
 
 
     return [site_O1[1], site_O2[1], H_mid, H_left, H_right]
     # rescale the bond length : currently based on Zn-O
 
+
+def DebugVisualization(vis_structure):
+        vis = StructureVis()
+        vis.set_structure(vis_structure)
+        vis.show()
+
+
+def nodes_expansion(structure):
+    
+    newsites = []
+
+    for site in structure.sites:
+        permutationList = [[],[],[]]
+        for i,pos in enumerate(site.frac_coords):
+            if pos > 0.5:
+                permutationList[i].extend([pos])
+                permutationList[i].extend([pos-1])
+            else:
+                permutationList[i].extend([pos])
+                permutationList[i].extend([pos+1])
+        for x in permutationList[0]:
+            for y in permutationList[1]:
+                for z in permutationList[2]:
+                    frac_coords = [x,y,z]
+                    new_site = copy.deepcopy(structure[0])
+                    new_site.frac_coords = frac_coords
+                    newsites.append(new_site)
+
+    new_structure = mgStructure.Structure.from_sites(newsites)
+
+    return new_structure

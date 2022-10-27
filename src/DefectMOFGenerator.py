@@ -12,6 +12,7 @@ import numpy as np
 import copy
 import random
 import time 
+import json
 
 from pymatgen.io.cif import CifParser
 from mofid.run_mofid import cif2mofid
@@ -20,11 +21,12 @@ import pymatgen.core.bonds  as mgBond
 import pymatgen.core.structure as mgStructure
 from pymatgen.io.vasp.inputs import Poscar
 
-from src.helper import CheckConnectivity, WriteStructure, CheckNeighbourMetalCluster
+
+from src.helper import CheckConnectivity, WriteStructure, CheckNeighbourMetalCluster, DebugVisualization, nodes_expansion
 from src.DefectMOFStructure import DefectMOFStructure
-import src.molecular_charge as charge_assginement
 
 from ase.io import read, write
+
 
 class DefectMOFStructureBuilder():
     
@@ -66,14 +68,17 @@ class DefectMOFStructureBuilder():
         except:            
             pass
         cif2mofid(cifFileName ,output_path = linkerSepDir)
-        self.original_nodes = self.ReadStructure(os.path.join(linkerSepDir, self.sepMode, 'nodes.cif'))
         self.original_linkers = self.ReadStructure(os.path.join(linkerSepDir, self.sepMode, 'linkers.cif'))
         self.original_linkers_length = len(self.original_linkers.sites)
         print("SBU seperation finished, which takes %f Seconds" % (time.time()-t0))
         
         # Subgraph detection : linker_cluster_assignment - LCA
         linker_cluster_assignment = CheckConnectivity(self.original_linkers)
-    
+        
+        self.original_nodes = self.ReadStructure(os.path.join(linkerSepDir, self.sepMode, 'nodes.cif'))
+        # pbc expande nodes so that for linker delete step to find the right neighbour
+        self.original_nodes = nodes_expansion(self.original_nodes)
+
         # Neighbour Metal Cluster detection : NbM
         coord_bond_array, metal_cluster_assignment, coord_bond_list = CheckNeighbourMetalCluster(self.original_linkers, self.original_nodes )
         NbM = [x + len(self.original_linkers) for x in coord_bond_array]
@@ -146,6 +151,9 @@ class DefectMOFStructureBuilder():
         cell = self.original_Structure.lattice.abc
         min_index = cell.index(min(cell))
         max_index = cell.index(max(cell))
+        # fix a = b = c 
+        if max_index==min_index:
+            max_index += 1
         _mid_index = [0,1,2]
         _mid_index.remove(min_index)
         _mid_index.remove(max_index)
@@ -188,7 +196,28 @@ class DefectMOFStructureBuilder():
         
         working_mof = copy.deepcopy(self.processed_structure)
         
-        charge_comp = charge_assginement.dictionary(self.linker_type[linker_type])
+        with open('src/charge_dict.json') as json_file:
+            charge_dict = json.load(json_file)
+        
+        if self.linker_type[linker_type] in charge_dict.keys():
+            charge_comp = charge_dict[self.linker_type[linker_type]]
+        else:
+            
+            for molecule in self.molecules:
+                if molecule.formula == self.linker_type[linker_type]:
+                    vis_structure = molecule
+                    break
+            DebugVisualization(vis_structure)
+
+            charge_comp = input("unseen molecular:%s, please specify charge\n"%(self.linker_type[linker_type] ))
+            try:
+                charge_comp = int(charge_comp)
+            except:
+                raise("please input num")
+            charge_dict[self.linker_type[linker_type]] = charge_comp
+
+        with open('src/charge_dict.json', 'w') as fp:
+            json.dump(charge_dict, fp)
 
         defect_structure = DefectMOFStructure(working_mof, superCell, defectConc, numofdefect, linker_type, self.output_dir, charge_comp)
         defect_structure.Build_supercell()
@@ -207,6 +236,4 @@ class DefectMOFStructureBuilder():
         
         return
     
-    def DebugVisualization():
-        
-        return
+
